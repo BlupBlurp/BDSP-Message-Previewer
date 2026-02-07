@@ -7,6 +7,7 @@ from tkinter import font as tkfont
 
 metrics = {}
 
+
 def load_metrics():
     filepath = '_assets/strlength.txt'
     try:
@@ -27,9 +28,22 @@ def load_metrics():
     except Exception as err:
         print("Error loading metrics file:", err)
 
+
+def skip_angle_bracket_block(text, start_index):
+    """
+    If text[start_index] == '<', skip until the next '>' (inclusive).
+    The whole <...> block counts as 0 width for calculations.
+    Returns the index just after '>' or start_index + 1 if no closing '>' exists.
+    """
+    end = text.find(">", start_index + 1)
+    return end + 1 if end != -1 else start_index + 1
+
+
 def measure_text(text):
     """
-    Special handling: any literal instance of "{n}" counts as width 343.6875.
+    Special handling:
+      - any literal instance of "{n}" counts as width 343.6875
+      - any "<...>" wrapped block counts as width 0
     Straight apostrophes in input are treated as left single quotation mark ’ for width purposes.
     """
     space_width = metrics.get(" ", 8.671875)
@@ -37,10 +51,16 @@ def measure_text(text):
     total_width = 0.0
     i = 0
     while i < len(text):
+        # NEW: treat any <...> block as 0 width
+        if text[i] == "<":
+            i = skip_angle_bracket_block(text, i)
+            continue
+
         if text.startswith("{n}", i):
             total_width += 343.6875
             i += 3
             continue
+
         ch = text[i]
         if ch == "'":
             ch = "’"
@@ -51,16 +71,26 @@ def measure_text(text):
         i += 1
     return total_width
 
+
 def find_overflow_index(text, limit_metric):
     """
     Returns the index in text where cumulative metric exceeds limit_metric.
     Characters from that index onward are considered overflow.
+
+    Special handling:
+      - any "<...>" wrapped block counts as width 0
+      - any "{n}" counts as width 343.6875
     """
     space_width = metrics.get(" ", 8.671875)
     fallback_digit = 15.0
     total_width = 0.0
     i = 0
     while i < len(text):
+        # NEW: treat any <...> block as 0 width
+        if text[i] == "<":
+            i = skip_angle_bracket_block(text, i)
+            continue
+
         if text.startswith("{n}", i):
             increment = 343.6875
             if total_width + increment > limit_metric:
@@ -68,6 +98,7 @@ def find_overflow_index(text, limit_metric):
             total_width += increment
             i += 3
             continue
+
         ch = text[i]
         if ch == "'":
             ch = "‘"
@@ -80,6 +111,7 @@ def find_overflow_index(text, limit_metric):
         i += 1
     return len(text)
 
+
 BASE_FONT_SIZE = 54
 MAX_WIDTH = 1080
 
@@ -87,12 +119,14 @@ load_metrics()
 base_phrase = "Oh. And it needs to be found and caught down"
 base_metric = measure_text(base_phrase)
 
+
 def compute_font_for_text(text):
     current_metric = measure_text(text)
     if current_metric <= base_metric:
         return BASE_FONT_SIZE, current_metric
     scaled_size = int(BASE_FONT_SIZE * (base_metric / current_metric))
     return max(scaled_size, 1), current_metric
+
 
 # -------------------------------
 # Globals for UI state
@@ -107,11 +141,13 @@ auto_wrap_enabled = False  # new: auto wrap toggle
 # Refresh Display (Dynamic Font Sizing + Info Box)
 # -------------------------------
 
+
 def set_separator(idx, sep):
     if idx < 0 or idx >= len(separator_list):
         return
     separator_list[idx] = sep
     refresh_display()
+
 
 def toggle_auto_wrap():
     global auto_wrap_enabled
@@ -121,6 +157,7 @@ def toggle_auto_wrap():
     else:
         auto_wrap_button.config(text="Auto Wrap: Off", relief="raised")
     refresh_display()
+
 
 def refresh_display(event=None):
     global separator_list
@@ -159,7 +196,7 @@ def refresh_display(event=None):
                     bp = remaining.rfind(' ', 0, cutoff)
                     if bp > 0:
                         line_part = remaining[:bp].rstrip()
-                        remaining = remaining[bp+1:]
+                        remaining = remaining[bp + 1:]
                     else:
                         line_part = remaining[:cutoff]
                         remaining = remaining[cutoff:]
@@ -204,7 +241,9 @@ def refresh_display(event=None):
         effective_sizes.append(size)
         scale_factor = MAX_WIDTH / (BASE_FONT_SIZE * base_metric)
         approx_width = size * scale_factor * metric
-        details_lines.append(f"Line {i}: Calc length = {metric}, Rendered ≈ {approx_width:.2f}px, Eff size = {size}")
+        details_lines.append(
+            f"Line {i}: Calc length = {metric}, Rendered ≈ {approx_width:.2f}px, Eff size = {size}"
+        )
 
     base_size = min(effective_sizes) if effective_sizes else BASE_FONT_SIZE
     final_size = int(base_size * TEXT_SCALE)
@@ -253,11 +292,22 @@ def refresh_display(event=None):
         row.pack(anchor="nw", pady=2)
         label = tk.Label(row, text=f"Gap {gap_index + 1}:")
         label.pack(side="left", padx=(0, 4))
+
         def make_setter(idx, sep):
             return lambda: set_separator(idx, sep)
+
         # Updated button labels per request
-        for sep_candidate, display_label in [(r"\r", "New Line \\r"), (r"\n", "Line Break \\n"), (r"\f", "Scroll Line \\f")]:
-            btn = tk.Button(row, text=display_label, width=14, command=make_setter(gap_index, sep_candidate))
+        for sep_candidate, display_label in [
+            (r"\r", "New Line \\r"),
+            (r"\n", "Line Break \\n"),
+            (r"\f", "Scroll Line \\f"),
+        ]:
+            btn = tk.Button(
+                row,
+                text=display_label,
+                width=14,
+                command=make_setter(gap_index, sep_candidate),
+            )
             if separator_list[gap_index] == sep_candidate:
                 btn.config(relief="sunken")
             btn.pack(side="left", padx=2)
@@ -265,8 +315,22 @@ def refresh_display(event=None):
     # Adjust application window height based on number of lines (scaling window size)
     base_window_height = 340
     extra_per_line = 30
-    new_height = base_window_height + extra_per_line * max(0, line_count - 2)
-    root.geometry(f"1520x{new_height}")
+    calculated_outer_height = base_window_height + extra_per_line * max(0, line_count - 2)
+
+    # Let Tk lay out widgets and compute requested sizes
+    root.update_idletasks()
+
+    # Tk requested height is for the *client area*; geometry height is for the *outer window*.
+    # Compute current window "chrome" (title bar + borders) to avoid clipping bottom widgets.
+    chrome_height = root.winfo_height() - root.winfo_reqheight()
+    if chrome_height < 0:
+        chrome_height = 0
+
+    required_outer_height = root.winfo_reqheight() + chrome_height
+
+    new_outer_height = max(calculated_outer_height, required_outer_height)
+    root.geometry(f"1520x{new_outer_height}")
+
 
 # -------------------------------
 # Main Application
@@ -291,12 +355,25 @@ def main():
     bg_image = tk.PhotoImage(file="_assets/textbox.png")
     canvas.create_image(0, 0, anchor="nw", image=bg_image)
 
-    display_text = tk.Text(canvas, font=(DEFAULT_FONT, BASE_FONT_SIZE),
-                           bd=0, highlightthickness=0, bg="white", fg="black", wrap="word")
+    display_text = tk.Text(
+        canvas,
+        font=(DEFAULT_FONT, BASE_FONT_SIZE),
+        bd=0,
+        highlightthickness=0,
+        bg="white",
+        fg="black",
+        wrap="word",
+    )
     text_widget_width = canvas_width - 400
     text_widget_height = canvas_height - 60
-    canvas.create_window(100, 40, anchor="nw", window=display_text,
-                         width=text_widget_width, height=text_widget_height)
+    canvas.create_window(
+        100,
+        40,
+        anchor="nw",
+        window=display_text,
+        width=text_widget_width,
+        height=text_widget_height,
+    )
 
     display_text.bind("<KeyRelease>", refresh_display)
 
@@ -322,7 +399,11 @@ def main():
             return
         result = lines[0]
         for i in range(1, len(lines)):
-            sep = separator_list[i - 1] if i - 1 < len(separator_list) else (r"\f" if i > 1 else r"\n")
+            sep = (
+                separator_list[i - 1]
+                if i - 1 < len(separator_list)
+                else (r"\f" if i > 1 else r"\n")
+            )
             result += sep + lines[i]
         try:
             root.clipboard_clear()
@@ -333,15 +414,20 @@ def main():
     button_frame = tk.Frame(root)
     button_frame.pack(pady=(15, 0))  # moved slightly lower with top padding
 
-    copy_button = tk.Button(button_frame, text="Copy Message to Macro Format", command=copy_to_macro_format)
+    copy_button = tk.Button(
+        button_frame, text="Copy Message to Macro Format", command=copy_to_macro_format
+    )
     copy_button.pack(side="left", padx=4)
 
-    auto_wrap_button = tk.Button(button_frame, text="Auto Wrap: Off", command=toggle_auto_wrap)
+    auto_wrap_button = tk.Button(
+        button_frame, text="Auto Wrap: Off", command=toggle_auto_wrap
+    )
     auto_wrap_button.pack(side="left", padx=4)
 
     refresh_display()
 
     root.mainloop()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
