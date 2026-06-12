@@ -325,11 +325,12 @@ Shining Pearl, using the game's own character-width metrics, and produces the
 macro-format string the game expects.</p>
 
 <p><b>It works on one message at a time.</b> A single NPC message can span
-several on-screen text boxes — each tab here is one of those boxes. Compose one
-complete message, copy its macro, then clear and start the next one.</p>
+several on-screen text boxes — each page (tab) here is one of those boxes.
+Compose one complete message, copy its macro, then clear and start the next
+one.</p>
 
 <h3>Composing</h3>
-<p>Type into a box exactly as it should appear in game. Text that exceeds the
+<p>Type into a page exactly as it should appear in game. Text that exceeds the
 safe width turns <span style="color:#e84545;">red</span>, and the Line Metrics
 panel shows each line's calculated length. The preview font shrinks
 automatically the way the game shrinks oversized lines. <b>Auto Wrap</b>
@@ -340,21 +341,21 @@ as you type.</p>
 <h3>Separators (handled for you)</h3>
 <p>You never type separators — they're derived from your layout:</p>
 <ul>
-<li>Line 2 of a box follows a <b>Line Break</b> (\\n)</li>
-<li>Every later line in a box follows a <b>Scroll Line</b> (\\f)</li>
-<li>Each new box is joined with <b>\\r</b></li>
+<li>Line 2 of a page follows a <b>Line Break</b> (\\n)</li>
+<li>Every later line in a page follows a <b>Scroll Line</b> (\\f)</li>
+<li>Each new page is joined with <b>\\r</b></li>
 </ul>
 
 <h3>Importing an existing macro</h3>
 <p>The Macro Format panel is editable. Paste an existing macro string into it
-and the tool splits it back into boxes and lines, so you can inspect or
-reformat an old message. Edits flow both ways: typing in a box updates the
-macro, and editing the macro rebuilds the boxes.</p>
+and the tool splits it back into pages and lines, so you can inspect or
+reformat an old message. Edits flow both ways: typing in a page updates the
+macro, and editing the macro rebuilds the pages.</p>
 
 <h3>Output</h3>
 <p><b>Copy Macro to Clipboard</b> copies the assembled string —
 identical to what the Macro Format panel shows. <b>Clear All</b> resets the
-tool to a single empty box for the next message.</p>
+tool to a single empty page for the next message.</p>
 """
 
 
@@ -407,6 +408,38 @@ class AboutDialog(QDialog):
 # Message box page (one per tab)
 # -------------------------------
 
+class MessageEdit(QTextEdit):
+    """
+    QTextEdit that never contains soft line separators (U+2028/U+2029).
+
+    Pasted text and Shift+Enter can introduce these; visually they look like
+    new lines, but they keep the text in a single document block, so the
+    overflow highlighter would measure all those lines as one long string and
+    paint a false red. Normalizing everything to real paragraph breaks keeps
+    what the highlighter sees identical to what the metrics measure.
+    """
+
+    @staticmethod
+    def _normalize(text):
+        return (
+            text.replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .replace("\u2028", "\n")
+            .replace("\u2029", "\n")
+        )
+
+    def insertFromMimeData(self, source):
+        self.textCursor().insertText(self._normalize(source.text()))
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            # Shift+Enter would insert U+2028; force a real paragraph break
+            self.textCursor().insertText("\n")
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class BoxCanvas(QWidget):
     """Draws the textbox background image (or a fallback panel) behind the editor."""
 
@@ -425,7 +458,7 @@ class BoxCanvas(QWidget):
         self.setFixedSize(self.CANVAS_W, self.CANVAS_H)
         self.bg = QPixmap(asset_path("textbox.png"))
 
-        self.editor = QTextEdit(self)
+        self.editor = MessageEdit(self)
         self.editor.setGeometry(
             self.TEXT_X,
             self.TEXT_Y,
@@ -599,7 +632,7 @@ class PreviewerWindow(QMainWindow):
         page = BoxCanvas()
         page.editor.textChanged.connect(self.refresh_display)
         index = self.real_count()
-        self.tabs.insertTab(index, page, f"Box {index + 1}")
+        self.tabs.insertTab(index, page, f"Page {index + 1}")
         self.tabs.tabBar().setTabButton(
             index, QTabBar.ButtonPosition.RightSide, self._make_close_button(page)
         )
@@ -639,7 +672,7 @@ class PreviewerWindow(QMainWindow):
 
     def renumber_tabs(self):
         for i in range(self.real_count()):
-            self.tabs.setTabText(i, f"Box {i + 1}")
+            self.tabs.setTabText(i, f"Page {i + 1}")
 
     def current_editor(self):
         page = self.tabs.currentWidget()
@@ -708,12 +741,19 @@ class PreviewerWindow(QMainWindow):
         try:
             content = editor.toPlainText()
 
+            # toPlainText() shows soft line separators (U+2028/U+2029) as \n,
+            # but the document may still hold them inside a single block, which
+            # would make the overflow highlighter measure those lines as one
+            # long string. If any are present, force a document rebuild below.
+            raw = editor.document().toRawText()
+            has_soft_breaks = "\u2028" in raw or "\u2029" in raw
+
             # Replace straight apostrophes for display consistency
             new_content = content.replace("'", "’")
             if self.auto_wrap_enabled:
                 new_content = auto_wrap_content(new_content)
 
-            if new_content != content:
+            if new_content != content or has_soft_breaks:
                 cursor_offset = editor.textCursor().position()
                 editor.setPlainText(new_content)
                 cursor = editor.textCursor()
